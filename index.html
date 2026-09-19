@@ -205,13 +205,13 @@
 
     <div id="grupoLpa" style="display:none">
       <div class="field">
-        <div class="lbl"><span>LPA — lucro por ação projetado</span><span class="tag man">MANUAL</span></div>
+        <div class="lbl"><span>LPA — lucro por ação projetado</span><span class="tag man" id="tagLpa">MANUAL</span></div>
         <div class="inp">
           <span class="pre" id="curSym4">R$</span>
           <input id="lpaIn" inputmode="decimal" placeholder="0,00">
           <span class="suf">por ação</span>
         </div>
-        <div class="hint">Use o <b>lucro por ação básico</b> da DRE da empresa, ajustado para a sua
+        <div class="hint" id="lpaHint">Use o <b>lucro por ação básico</b> da DRE da empresa, ajustado para a sua
           projeção. Ele já considera a média ponderada de ações em circulação e exclui as ações em
           tesouraria — por isso dispensa a contagem de ações.</div>
       </div>
@@ -234,7 +234,8 @@
         <input id="acoes" inputmode="numeric" placeholder="0">
         <span class="suf" id="acoesAbbr">ações</span>
       </div>
-      <div class="hint" id="acoesHint">Total de ações da empresa (ON + PN), conforme as demonstrações financeiras.</div>
+      <div class="hint" id="acoesHint">Total de ações da empresa (ON + PN). Pegue nas demonstrações
+        financeiras ou na composição de capital na CVM — sites de cotação costumam divergir.</div>
     </div>
     </div>
 
@@ -592,18 +593,20 @@ async function buscarFundamentos(ticker, token){
                               "?fundamental=true&token="+encodeURIComponent(token), 12000);
     const r = j && j.results && j.results[0];
     if (!r) return;
-    const price = r.regularMarketPrice || DATA.price;
-    let shares = NaN;
-    if (r.marketCap && price) shares = r.marketCap / price;
-    if (isFinite(shares) && shares > 0){
-      $("acoes").value = Math.round(shares).toLocaleString("pt-BR");
-      marcarAuto("acoes", "ESTIMATIVA (valor de mercado ÷ cotação). Erra quando a empresa tem mais de "+
-        "uma classe (ON e PN com preços diferentes) ou negocia em units. Confira nas demonstrações "+
-        "financeiras, ou use o modo “LPA direto”.", true);
-      if (typeof r.earningsPerShare === "number" && r.earningsPerShare > 0){
-        $("lucro").value = Math.round(r.earningsPerShare * shares).toLocaleString("pt-BR");
-        marcarAuto("lucro", "brapi · LPA dos últimos 12 meses — ajuste para a sua projeção");
-      }
+    /* A quantidade de ações NÃO é mais derivada de valor de mercado ÷ cotação.
+       Os dois campos vêm de momentos diferentes — o valor de mercado costuma ser do
+       fechamento anterior e a cotação é a atual —, então a divisão embute a variação
+       do dia e devolve uma contagem errada por alguns décimos de por cento. Some-se a
+       isso empresas com duas classes ou units, e o número deixa de significar algo.
+       O LPA é um campo reportado, não derivado: é ele que preenchemos. */
+    if (typeof r.earningsPerShare === "number" && r.earningsPerShare > 0){
+      $("lpaIn").value = nf(r.earningsPerShare, 2);
+      $("tagLpa").textContent = "AUTOMÁTICO · EDITÁVEL";
+      $("tagLpa").className = "tag auto";
+      $("lpaHint").innerHTML = "brapi · lucro por ação dos últimos 12 meses. Ajuste para a sua " +
+        "projeção, e confira na DRE da empresa se o valor for decisivo.";
+      if (MODO !== "lpa") setStatus("✓ " + DATA.name + " · " + money(DATA.price) +
+        " — LPA dos últimos 12 meses disponível na aba “LPA direto”.", "ok");
     }
     calcular();
   } catch(e){ console.warn("brapi:", e); }
