@@ -388,6 +388,842 @@ const money = (n, d=2) => curSymbol(CUR)+" "+nf(n,d);
 
 /* ---------- rede: Yahoo via cadeia de proxies CORS ---------- */
 const PROXIES = [
+  u => "https://r.jina.ai/" + u,                                       // o mais confiável hoje
+  u => u,                                                              // direto (se o navegador permitir)
+  u => "https://api.cors.lol/?url=" + encodeURIComponent(u),
+  u => "https://test.cors.workers.dev/?" + u,
+  u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
+  u => "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(u)
+];
+let goodProxy = 0;
+
+/* Alguns proxies devolvem o JSON embrulhado em texto (o r.jina.ai prefixa
+   "Title: / URL Source: / Markdown Content:"). Extrai o JSON de qualquer um. */
+function extrairJSON(txt){
+  try { return JSON.parse(txt); } catch(e){}
+  const i = txt.search(/[\{\[]/);
+  if (i >= 0){ try { return JSON.parse(txt.slice(i)); } catch(e){} }
+  throw new Error("resposta não é JSON");
+}
+
+/* O Safari proíbe qualquer requisição de rede quando a página é um arquivo local
+   (origem "file://"). O Chrome permite. Detectamos para avisar em vez de travar. */
+const IS_FILE = location.protocol === "file:";
+const IS_SAFARI = /^((?!chrome|chromium|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
+const BLOQUEADO = IS_FILE && IS_SAFARI;
+const AVISO_SAFARI = "O Safari bloqueia a busca automática em arquivos abertos do disco. " +
+  "Abra este mesmo arquivo no Google Chrome para a cotação vir sozinha — " +
+  "ou preencha os campos à mão, que todo o cálculo funciona normalmente.";
+
+async function fetchJSON(url, timeout=12000, deadline=Date.now()+45000){
+  const base = [goodProxy, ...PROXIES.keys()].filter((v,i,a)=>a.indexOf(v)===i);
+  const order = base.concat(base); // duas passadas: proxies públicos falham de forma intermitente
+  let lastErr;
+  for (const i of order){
+    if (Date.now() > deadline) break;   // nunca deixa a busca prender a página
+    const ctl = new AbortController();
+    const t = setTimeout(()=>ctl.abort(), timeout);
+    try {
+      const r = await fetch(PROXIES[i](url), {signal: ctl.signal});
+      clearTimeout(t);
+      if (!r.ok) { lastErr = new Error("HTTP "+r.status); continue; }
+      const j = extrairJSON(await r.text());  // truncada ou não-JSON cai no catch e tenta o próximo
+      goodProxy = i;
+      return j;
+    } catch(e){ clearTimeout(t); lastErr = e; }
+  }
+  throw lastErr || new Error("sem resposta");
+}
+
+/* ---------- resolução de ticker ---------- */
+function resolveSymbol(raw){
+  let t = raw.trim().toUpperCase().replace(/\s+/g,"");
+  if (!t) return "";
+  if (t.includes(".")) return t;                 // usuário já informou o sufixo
+  if (/^[A-Z]{4}\d{1,2}$/.test(t)) return t+".SA"; // padrão B3: PETR4, ITSA4, BBAS3, TAEE11
+  if (/^[A-Z]{4}\d{2}$/.test(t))  return t+".SA";
+  return t;                                       // EUA e demais
+}
+
+/* ---------- estado ---------- */
+let DATA = null; // {price, currency, name, exch, time, low52, high52, years:[{y,dpa,avg,dy}], ttmDiv, ttmDy}
+
+/* ---------- busca ---------- */
+async function buscar(){
+  const raw = $("ticker").value;
+  const sym = resolveSymbol(raw);
+  if (!sym){ setStatus("Informe um ticker.", "err"); return; }
+
+  if (BLOQUEADO){ setStatus(AVISO_SAFARI, "warn"); return; }
+
+  $("go").disabled = true;
+  setStatus("Buscando "+sym+"…");
+
+  try {
+    const [q, h] = await Promise.all([
+      fetchJSON("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(sym)+"?interval=1d&range=1y"),
+      fetchJSON("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(sym)+"?interval=1mo&range=6y&events=div")
+    ]);
+
+    const res = q && q.chart && q.chart.result && q.chart.result[0];
+    if (!res) throw new Error("ticker não encontrado");
+
+    const m = res.meta;
+    CUR = m.currency || "BRL";
+
+    // 52 semanas a partir dos fechamentos diários (o campo da API vem zerado às vezes)
+    const closes1y = (res.indicators.quote[0].close || []).filter(v => typeof v === "number");
+    const low52  = m.fiftyTwoWeekLow  || (closes1y.length ? Math.min(...closes1y) : NaN);
+    const high52 = m.fiftyTwoWeekHigh || (closes1y.length ? Math.max(...closes1y) : NaN);
+
+    DATA = {
+      symbol: m.symbol,
+      price: m.regularMarketPrice,
+      currency: CUR,
+      name: (m.longName || m.shortName || m.symbol).replace(/\s{2,}/g," ").trim(),
+      exch: m.fullExchangeName || m.exchangeName || "",
+      time: m.regularMarketTime ? new Date(m.regularMarketTime*1000) : null,
+      low52, high52,
+      years: [], ttmDiv: 0, ttmDy: NaN
+    };
+
+    montarHistorico(h);
+    aplicarBusca();
+    setStatus("✓ "+DATA.name+" · "+money(DATA.price)+" · atualizado em "+fmtWhen(DATA.time), "ok");
+
+    // fundamentos opcionais (B3 via brapi)
+    const tok = store.get("brapi","");
+    if (tok && sym.endsWith(".SA")) await buscarFundamentos(sym.replace(".SA",""), tok);
+
+  } catch(e){
+    console.error(e);
+    const abortado = /abort/i.test(String(e && e.message || e));
+    setStatus(
+      abortado && IS_FILE
+        ? "A busca foi bloqueada pelo navegador. " + AVISO_SAFARI
+        : "Não consegui buscar "+sym+" ("+(e.message||e)+"). Confira o ticker — os campos continuam preenchíveis à mão e o cálculo funciona igual.",
+      "warn");
+  } finally {
+    $("go").disabled = false;
+    calcular();
+  }
+}
+
+function fmtWhen(d){
+  if (!d) return "—";
+  return d.toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit"})+" "+
+         d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+}
+
+/* ---------- histórico de proventos ---------- */
+function montarHistorico(h){
+  const r = h && h.chart && h.chart.result && h.chart.result[0];
+  if (!r) return;
+  const divs = (r.events && r.events.dividends) ? Object.values(r.events.dividends) : [];
+  const ts = r.timestamp || [];
+  const cl = (r.indicators.quote[0].close) || [];
+
+  // preço médio por ano
+  const byYear = {};
+  ts.forEach((t,i) => {
+    const v = cl[i];
+    if (typeof v !== "number") return;
+    const y = new Date(t*1000).getFullYear();
+    (byYear[y] = byYear[y] || []).push(v);
+  });
+
+  const dpaYear = {};
+  const cutoff = Date.now()/1000 - 365*24*3600;
+  let ttm = 0;
+  divs.forEach(d => {
+    const y = new Date(d.date*1000).getFullYear();
+    dpaYear[y] = (dpaYear[y]||0) + d.amount;
+    if (d.date >= cutoff) ttm += d.amount;
+  });
+
+  const thisYear = new Date().getFullYear();
+  const years = Object.keys(dpaYear).map(Number)
+    .filter(y => y < thisYear)            // só anos fechados
+    .sort((a,b)=>a-b).slice(-5)
+    .map(y => {
+      const arr = byYear[y] || [];
+      const avg = arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : NaN;
+      return { y, dpa: dpaYear[y], avg, dy: isFinite(avg) && avg>0 ? dpaYear[y]/avg*100 : NaN };
+    });
+
+  DATA.years = years;
+  DATA.ttmDiv = ttm;
+  DATA.ttmDy = DATA.price > 0 ? ttm/DATA.price*100 : NaN;
+}
+
+/* ---------- fundamentos opcionais (brapi) ---------- */
+async function buscarFundamentos(ticker, token){
+  try{
+    const j = await fetchJSON("https://brapi.dev/api/quote/"+encodeURIComponent(ticker)+
+                              "?fundamental=true&token="+encodeURIComponent(token), 12000);
+    const r = j && j.results && j.results[0];
+    if (!r) return;
+    const price = r.regularMarketPrice || DATA.price;
+    let shares = NaN;
+    if (r.marketCap && price) shares = r.marketCap / price;
+    if (isFinite(shares) && shares > 0){
+      $("acoes").value = Math.round(shares).toLocaleString("pt-BR");
+      marcarAuto("acoes", "brapi · market cap ÷ preço");
+      if (typeof r.earningsPerShare === "number" && r.earningsPerShare > 0){
+        $("lucro").value = Math.round(r.earningsPerShare * shares).toLocaleString("pt-BR");
+        marcarAuto("lucro", "brapi · LPA dos últimos 12 meses — ajuste para a sua projeção");
+      }
+    }
+    calcular();
+  } catch(e){ console.warn("brapi:", e); }
+}
+
+function marcarAuto(campo, hint){
+  const tag = campo==="lucro" ? $("tagLucro") : $("tagAcoes");
+  tag.textContent = "AUTOMÁTICO · EDITÁVEL";
+  tag.className = "tag auto";
+  (campo==="lucro" ? $("lucroHint") : $("acoesHint")).textContent = hint;
+}
+
+/* ---------- aplicar resultado da busca nos campos ---------- */
+function aplicarBusca(){
+  $("price").value = nf(DATA.price, DATA.price < 10 ? 2 : 2);
+  $("priceMeta").textContent = DATA.name + " · " + fmtWhen(DATA.time);
+  const s = curSymbol(CUR);
+  setTxt("curSym", s); setTxt("curSym2", s); setTxt("curSym3", s);
+  $("c3l").textContent = "Cotação × mín. 52 semanas ("+money(DATA.low52)+")";
+  $("c4l").textContent = "Cotação × máx. 52 semanas ("+money(DATA.high52)+")";
+  renderHistorico();
+}
+
+function renderHistorico(){
+  const ys = DATA ? DATA.years : [];
+  if (!ys.length){
+    $("histEmpty").style.display = "block";
+    $("histEmpty").textContent = "Sem histórico de proventos para este ticker.";
+    $("histContent").style.display = "none";
+    return;
+  }
+  $("histEmpty").style.display = "none";
+  $("histContent").style.display = "block";
+
+  const dyProj = calcDados().dy;
+  const vals = ys.map(o=>o.dy).filter(isFinite);
+  const max = Math.max(...vals, isFinite(dyProj)?dyProj:0, 1);
+
+  $("spark").innerHTML = ys.map(o =>
+      `<div style="height:${Math.max(4,(o.dy/max)*100)}%;background:linear-gradient(180deg,#3fb950,#1f6f33)"></div>`
+    ).join("") +
+    `<div style="height:${isFinite(dyProj)?Math.max(4,(dyProj/max)*100):4}%;background:linear-gradient(180deg,#58a6ff,#1f4f8f)"></div>`;
+  $("sparkx").innerHTML = ys.map(o=>`<span>${o.y}</span>`).join("") + `<span>proj.</span>`;
+
+  const med = vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : NaN;
+  const medDpa = ys.length ? ys.reduce((a,b)=>a+b.dpa,0)/ys.length : NaN;
+  DATA.dyMedia = med;
+
+  const rows = [
+    ["Média "+ys.length+" anos", med, medDpa, ""],
+    ["Últimos 12 meses", DATA.ttmDy, DATA.ttmDiv, ""],
+    ["Projetado", dyProj, calcDados().dpa, "up"]
+  ];
+  $("histRows").innerHTML = rows.map(([k,dy,dpa,cls]) =>
+    `<tr><td>${k}</td>
+      <td class="r ${cls}">${isFinite(dy)?nf(dy,2)+"%":"—"}</td>
+      <td class="r ${cls}">${isFinite(dpa)?money(dpa,dpa<1?3:2):"—"}</td></tr>`).join("");
+}
+
+/* ---------- cálculo ---------- */
+function calcDados(){
+  const price  = parseNum($("price").value);
+  const lucro  = parseNum($("lucro").value);
+  const acoes  = parseNum($("acoes").value);
+  const payout = parseNum($("payout").value);
+  const yld    = parseNum($("yld").value);
+
+  const lpa = (isFinite(lucro) && isFinite(acoes) && acoes > 0) ? lucro/acoes : NaN;
+  const dpa = (isFinite(lpa) && isFinite(payout)) ? lpa * (payout/100) : NaN;
+  const teto = (isFinite(dpa) && isFinite(yld) && yld > 0) ? dpa / (yld/100) : NaN;
+  const margem = (isFinite(teto) && isFinite(price) && price > 0) ? (teto/price - 1)*100 : NaN;
+  const desconto = (isFinite(teto) && isFinite(price) && teto > 0) ? (1 - price/teto)*100 : NaN;
+  const dy = (isFinite(dpa) && isFinite(price) && price > 0) ? dpa/price*100 : NaN;
+  const pl = (isFinite(lpa) && lpa > 0 && isFinite(price)) ? price/lpa : NaN;
+
+  return {price, lucro, acoes, payout, yld, lpa, dpa, teto, margem, desconto, dy, pl};
+}
+
+function calcular(){
+  // nunca deixa um erro isolado travar a página inteira sem explicação
+  try { calcularInner(); }
+  catch(e){
+    console.error(e);
+    setStatus("Erro ao calcular: " + ((e && e.message) ? e.message : e), "err");
+  }
+}
+
+function calcularInner(){
+  const d = calcDados();
+
+  $("lucroAbbr").textContent = isFinite(d.lucro) ? abbr(d.lucro) : "—";
+  $("acoesAbbr").textContent = isFinite(d.acoes) ? abbr(d.acoes)+" ações" : "ações";
+
+  const s = curSymbol(CUR);
+  setTxt("curSym", s); setTxt("curSym2", s); setTxt("curSym3", s);
+
+  // KPIs
+  $("lpa").textContent = isFinite(d.lpa) ? money(d.lpa, d.lpa<1?3:2) : "—";
+  $("dpa").textContent = isFinite(d.dpa) ? money(d.dpa, d.dpa<1?3:2) : "—";
+  $("dpaD").textContent = isFinite(d.payout) ? "Dividendo por ação · payout "+nf(d.payout,0)+"%" : "Dividendo por ação";
+  $("dyk").textContent = isFinite(d.dy) ? nf(d.dy,2)+"%" : "—";
+  $("dyk").className = "v" + (isFinite(d.dy) && isFinite(d.yld) ? (d.dy >= d.yld ? " up" : " down") : "");
+  $("dykD").textContent = isFinite(d.price) ? "No preço atual de "+money(d.price) : "No preço atual";
+  $("pl").textContent = isFinite(d.pl) ? nf(d.pl,1)+"×" : "—";
+
+  // veredito
+  const card = $("verdictCard"), badge = $("badge");
+  if (!isFinite(d.teto)){
+    // diz exatamente o que está faltando, em vez de só mostrar "—"
+    const falta = [];
+    if (!isFinite(d.lucro) || d.lucro <= 0) falta.push("lucro líquido projetado");
+    if (!isFinite(d.acoes) || d.acoes <= 0) falta.push("quantidade de ações");
+    if (!isFinite(d.payout) || d.payout <= 0) falta.push("payout");
+    if (!isFinite(d.yld) || d.yld <= 0) falta.push("yield aceitável");
+
+    $("teto").innerHTML = `<small id="curSym3">${s}</small>—`;
+    $("tetoCap").textContent = falta.length
+      ? "Falta preencher: " + falta.join(", ") + "."
+      : "Preencha lucro, nº de ações, payout e yield aceitável.";
+    badge.textContent = "● AGUARDANDO DADOS";
+    badge.style.cssText = "color:var(--dim);border-color:var(--line);background:var(--panel2)";
+    card.style.borderColor = "var(--line)";
+    card.style.background = "var(--panel)";
+    $("barfill").style.width = "0%";
+    $("barPrice").textContent = isFinite(d.price) ? money(d.price) : "—";
+    $("barTeto").textContent = "—";
+    $("margem").textContent = "—"; $("margem").className = "v";
+    $("desc").textContent = "—"; $("desc").className = "v";
+    $("mk").style.display = "none";
+    $("dyProj").textContent = "—";
+    $("yieldrow").style.cssText = "background:var(--panel2);border-color:var(--line)";
+    $("dyProj").className = "";
+    atualizarComparativo(d);
+    return;
+  }
+
+  $("teto").innerHTML = `<small id="curSym3">${s}</small>${nf(d.teto, d.teto<10?2:2)}`;
+  $("tetoCap").textContent = "Preço-teto — máximo a pagar para obter "+nf(d.yld,1)+"% de yield";
+  $("barTeto").textContent = money(d.teto);
+  $("barPrice").textContent = isFinite(d.price) ? money(d.price) : "—";
+
+  let tone, label;
+  if (!isFinite(d.margem)) { tone="dim"; label="● SEM COTAÇÃO"; }
+  else if (d.margem >= 15) { tone="green"; label="● BOA COMPRA"; }
+  else if (d.margem >= -5) { tone="amber"; label="● NEUTRO"; }
+  else                     { tone="red";   label="● CARO"; }
+
+  const colors = {
+    green:["var(--green)","rgba(63,185,80,.4)","var(--greenbg)","linear-gradient(160deg,rgba(63,185,80,.10),rgba(22,27,34,0) 60%)"],
+    amber:["var(--amber)","rgba(210,153,34,.4)","var(--amberbg)","linear-gradient(160deg,rgba(210,153,34,.10),rgba(22,27,34,0) 60%)"],
+    red:  ["var(--red)","rgba(248,81,73,.4)","var(--redbg)","linear-gradient(160deg,rgba(248,81,73,.10),rgba(22,27,34,0) 60%)"],
+    dim:  ["var(--dim)","var(--line)","var(--panel2)","none"]
+  }[tone];
+
+  badge.textContent = label;
+  badge.style.cssText = `color:${colors[0]};border-color:${colors[1]};background:${colors[2]}`;
+  card.style.borderColor = colors[1];
+  card.style.background = colors[3]==="none" ? "var(--panel)" : colors[3]+", var(--panel)";
+
+  // barra: cotação em relação ao teto
+  if (isFinite(d.price) && d.teto > 0){
+    const w = Math.max(2, Math.min(100, d.price/d.teto*100));
+    $("barfill").style.width = w+"%";
+    $("barfill").style.background = tone==="red"
+      ? "linear-gradient(90deg,#b62324,#f85149)"
+      : tone==="amber" ? "linear-gradient(90deg,#9e7010,#d29922)"
+      : "linear-gradient(90deg,#2ea043,#3fb950)";
+  }
+
+  const cls = tone==="green" ? "up" : tone==="amber" ? "neu" : tone==="red" ? "down" : "";
+  $("margem").textContent = isFinite(d.margem) ? pct(d.margem) : "—";
+  $("margem").className = "v " + cls;
+  $("desc").textContent = isFinite(d.desconto) ? nf(d.desconto,1)+"%" : "—";
+  $("desc").className = "v " + cls;
+
+  // marcador na escala: -30% .. +60% mapeado nas 3 faixas (1 : 1 : 1.6)
+  if (isFinite(d.margem)){
+    const m = d.margem, total = 3.6;
+    let f;
+    if (m < -5)      f = (1 * Math.max(0,(m+30)/25)) / total;
+    else if (m < 15) f = (1 + (m+5)/20) / total;
+    else             f = (2 + 1.6*Math.min(1,(m-15)/45)) / total;
+    $("mk").style.display = "block";
+    $("mk").style.left = (Math.max(0.5, Math.min(99, f*100))) + "%";
+  } else $("mk").style.display = "none";
+
+  $("dyProj").textContent = isFinite(d.dy) ? nf(d.dy,2)+"%" : "—";
+  $("dyProj").className = cls;
+  $("yieldCap").textContent = isFinite(d.price)
+    ? "Comprando a "+money(d.price)+" seu yield seria"
+    : "Comprando no preço de hoje seu yield seria";
+  $("yieldrow").style.cssText = `background:${colors[2]};border-color:${colors[1]}`;
+
+  atualizarComparativo(d);
+  if (DATA) renderHistorico();
+}
+
+function atualizarComparativo(d){
+  const set = (id, txt, cls) => { const e = $(id); e.textContent = txt; e.className = cls||""; };
+
+  if (isFinite(d.dy) && isFinite(d.yld)){
+    const v = d.dy - d.yld;
+    set("c1", (v>0?"+":"")+nf(v,2)+" p.p.", v>=0?"up":"down");
+  } else set("c1","—");
+
+  if (DATA && isFinite(DATA.dyMedia) && isFinite(d.dy)){
+    const v = d.dy - DATA.dyMedia;
+    set("c2", (v>0?"+":"")+nf(v,2)+" p.p.", v>=0?"up":"down");
+  } else set("c2","—");
+
+  if (DATA && isFinite(DATA.low52) && isFinite(d.price) && DATA.low52>0){
+    set("c3", pct((d.price/DATA.low52-1)*100,1));
+  } else set("c3","—");
+
+  if (DATA && isFinite(DATA.high52) && isFinite(d.price) && DATA.high52>0){
+    set("c4", pct((d.price/DATA.high52-1)*100,1));
+  } else set("c4","—");
+
+  if (DATA && isFinite(DATA.ttmDiv) && DATA.ttmDiv>0 && isFinite(d.lpa) && d.lpa>0){
+    set("c5", nf(DATA.ttmDiv/d.lpa*100,0)+"%");
+  } else set("c5","—");
+}
+
+function setStatus(msg, cls){
+  const e = $("status");
+  e.textContent = msg;
+  e.className = "status" + (cls ? " "+cls : "");
+}
+
+/* ---------- eventos ---------- */
+["price","lucro","acoes","payout","yld"].forEach(id => $(id).addEventListener("input", () => {
+  if (id==="payout") store.set("payout", $(id).value);
+  if (id==="yld")    store.set("yld", $(id).value);
+  calcular();
+}));
+$("go").addEventListener("click", buscar);
+$("ticker").addEventListener("keydown", e => { if (e.key==="Enter") buscar(); });
+
+$("cfgbtn").addEventListener("click", () => { $("brapiToken").value = store.get("brapi",""); $("cfg").showModal(); });
+$("cfgClose").addEventListener("click", () => $("cfg").close());
+$("cfgSave").addEventListener("click", () => {
+  store.set("brapi", $("brapiToken").value.trim());
+  $("cfg").close();
+  setStatus("Token salvo. Busque o ticker novamente para preencher os fundamentos.", "ok");
+});
+
+/* ---------- inicialização ---------- */
+$("payout").value = store.get("payout","60");
+$("yld").value    = store.get("yld","6");
+const lastTicker  = store.get("ticker","");
+if (lastTicker) $("ticker").value = lastTicker;
+$("ticker").addEventListener("change", () => store.set("ticker", $("ticker").value.trim().toUpperCase()));
+
+if (BLOQUEADO){
+  setStatus(AVISO_SAFARI, "warn");
+  $("priceMeta").textContent = "digite a cotação";
+}
+calcular();
+</script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Analisador de Preço-Teto</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#262d38;
+    --txt:#e6edf3; --muted:#8b949e; --dim:#6e7681;
+    --green:#3fb950; --greenbg:rgba(63,185,80,.12);
+    --amber:#d29922; --amberbg:rgba(210,153,34,.12);
+    --red:#f85149; --redbg:rgba(248,81,73,.12);
+    --blue:#58a6ff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    max-width:1280px;margin:0 auto;padding:28px 32px 48px;-webkit-font-smoothing:antialiased}
+  @media(max-width:860px){body{padding:18px 16px 40px}}
+
+  .top{display:flex;align-items:center;justify-content:space-between;gap:16px;
+    flex-wrap:wrap;margin-bottom:22px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#3fb950,#2ea043);
+    display:flex;align-items:center;justify-content:center;font-size:19px}
+  h1{font-size:19px;font-weight:650;letter-spacing:-.2px}
+  .sub{font-size:12.5px;color:var(--muted);margin-top:1px}
+  .search{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .tickerbox{display:flex;align-items:center;background:var(--panel);border:1px solid var(--line);
+    border-radius:9px;padding:0 12px;height:42px;width:250px;gap:9px}
+  .tickerbox:focus-within{border-color:var(--green)}
+  .tickerbox span{color:var(--dim);font-size:14px}
+  .tickerbox input{background:none;border:0;color:var(--txt);font-size:16px;font-weight:650;
+    letter-spacing:.8px;outline:none;width:100%;font-family:inherit;text-transform:uppercase}
+  .btn{height:42px;padding:0 20px;border-radius:9px;background:#2ea043;color:#fff;border:0;
+    font-size:14px;font-weight:600;font-family:inherit;cursor:pointer}
+  .btn:hover{background:#3fb950}
+  .btn:disabled{opacity:.55;cursor:default}
+  .btn.ghost{background:var(--panel);border:1px solid var(--line);color:var(--muted);padding:0 14px}
+  .btn.ghost:hover{color:var(--txt);border-color:var(--dim);background:var(--panel)}
+
+  .status{font-size:12.5px;color:var(--muted);margin-bottom:16px;min-height:18px}
+  .status.err{color:var(--red)}
+  .status.ok{color:var(--green)}
+  .status.warn{color:var(--amber)}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+  .bottom{display:grid;grid-template-columns:1.35fr 1fr;gap:18px;margin-top:18px;align-items:start}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:18px}
+  @media(max-width:900px){
+    .grid,.bottom{grid-template-columns:1fr}
+    .kpis{grid-template-columns:repeat(2,1fr)}
+  }
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+  .card h2{font-size:11px;font-weight:700;letter-spacing:1.1px;text-transform:uppercase;
+    color:var(--dim);margin-bottom:16px;display:flex;justify-content:space-between;align-items:center}
+
+  .field{margin-bottom:14px}
+  .lbl{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;
+    color:var(--muted);margin-bottom:6px;gap:8px}
+  .tag{font-size:9.5px;font-weight:700;letter-spacing:.6px;border-radius:4px;padding:2px 6px;white-space:nowrap}
+  .tag.auto{color:var(--blue);background:rgba(88,166,255,.12)}
+  .tag.man{color:var(--dim);background:rgba(139,148,158,.1)}
+  .inp{display:flex;align-items:center;background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;height:44px;padding:0 13px;gap:8px}
+  .inp:focus-within{border-color:var(--green)}
+  .inp.ro{opacity:.95}
+  .inp .pre{color:var(--dim);font-size:13px;flex-shrink:0}
+  .inp input{background:none;border:0;outline:none;color:var(--txt);font-family:inherit;
+    font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;flex:1;min-width:0;width:100%}
+  .inp input[readonly]{color:var(--txt)}
+  .inp .suf{color:var(--dim);font-size:12.5px;flex-shrink:0;text-align:right;max-width:52%;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hint{font-size:11px;color:var(--dim);margin-top:5px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+  .verdict{transition:border-color .2s}
+  .badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;
+    padding:6px 14px;font-size:12.5px;font-weight:700;letter-spacing:.5px;border:1px solid}
+  .big{font-size:52px;font-weight:700;letter-spacing:-2px;font-variant-numeric:tabular-nums;
+    margin:14px 0 2px;line-height:1}
+  .big small{font-size:22px;font-weight:600;color:var(--muted);margin-right:4px;letter-spacing:0}
+  .bigcap{font-size:12.5px;color:var(--muted)}
+
+  .bar{margin-top:20px}
+  .bartrack{height:10px;border-radius:6px;background:var(--panel2);position:relative;overflow:hidden}
+  .barfill{position:absolute;left:0;top:0;bottom:0;border-radius:6px;transition:width .35s ease}
+  .barlbl{display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim);margin-top:8px;gap:10px}
+  .barlbl b{color:var(--txt);font-weight:600}
+
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:20px;
+    border-top:1px solid var(--line);padding-top:18px}
+  .mini .k{font-size:11.5px;color:var(--muted);margin-bottom:4px}
+  .mini .v{font-size:23px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+  .up{color:var(--green)}.down{color:var(--red)}.neu{color:var(--amber)}
+
+  .scale{margin-top:22px;border-top:1px solid var(--line);padding-top:18px}
+  .scale .k{font-size:11.5px;color:var(--muted);margin-bottom:10px}
+  .scalebar{display:flex;gap:4px;position:relative}
+  .scalebar i{height:8px;display:block}
+  .scalebar .mk{position:absolute;top:-6px;width:2px;height:20px;background:#fff;border-radius:2px;
+    transition:left .35s ease}
+  .scalex{display:flex;gap:4px;margin-top:8px;font-size:11px;color:var(--dim)}
+
+  .yieldrow{display:flex;justify-content:space-between;align-items:center;margin-top:18px;
+    border-radius:9px;padding:11px 14px;border:1px solid;gap:12px}
+  .yieldrow span{font-size:12.5px;color:var(--muted)}
+  .yieldrow b{font-size:17px;font-variant-numeric:tabular-nums}
+
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px 17px}
+  .kpi .k{font-size:11px;color:var(--dim);letter-spacing:.4px;text-transform:uppercase;font-weight:600}
+  .kpi .v{font-size:24px;font-weight:650;margin-top:7px;font-variant-numeric:tabular-nums;letter-spacing:-.6px}
+  .kpi .d{font-size:11.5px;color:var(--muted);margin-top:3px}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:10.5px;letter-spacing:.7px;text-transform:uppercase;
+    color:var(--dim);font-weight:650;padding-bottom:9px;border-bottom:1px solid var(--line)}
+  th.r,td.r{text-align:right}
+  td{padding:9px 0;border-bottom:1px solid rgba(38,45,56,.6);font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:0}
+
+  .spark{display:flex;align-items:flex-end;gap:5px;height:74px;margin-top:4px}
+  .spark div{flex:1;background:var(--panel2);border-radius:3px 3px 0 0;min-height:3px;
+    transition:height .35s ease}
+  .sparkx{display:flex;gap:5px;margin-top:7px}
+  .sparkx span{flex:1;text-align:center;font-size:10.5px;color:var(--dim)}
+
+  .cmp{display:flex;justify-content:space-between;align-items:baseline;padding:11px 0;gap:12px;
+    border-bottom:1px solid rgba(38,45,56,.6);font-size:13px}
+  .cmp:last-of-type{border-bottom:0}
+  .cmp span{color:var(--txt)}
+  .cmp b{font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .note{font-size:11px;color:var(--dim);margin-top:14px;line-height:1.55}
+  .formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+    color:var(--muted);background:var(--panel2);border:1px solid var(--line);
+    border-radius:7px;padding:9px 12px;margin-top:14px;line-height:1.6}
+  .empty{font-size:12.5px;color:var(--dim);padding:22px 0;text-align:center}
+
+  dialog{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:14px;
+    padding:24px;max-width:460px;width:calc(100% - 32px)}
+  dialog::backdrop{background:rgba(0,0,0,.6)}
+  dialog h3{font-size:16px;margin-bottom:6px}
+  dialog p{font-size:12.5px;color:var(--muted);line-height:1.6;margin-bottom:16px}
+  dialog a{color:var(--blue)}
+  dialog .inp{margin-bottom:6px}
+  dialog .inp input{font-size:13px;font-weight:500;letter-spacing:.3px}
+  .dlgbtns{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+  .cfg{background:none;border:0;color:var(--dim);font-size:11px;font-family:inherit;
+    cursor:pointer;letter-spacing:.5px;text-transform:uppercase;font-weight:700}
+  .cfg:hover{color:var(--txt)}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="brand">
+    <div class="logo">📈</div>
+    <div>
+      <h1>Analisador de Preço-Teto</h1>
+      <div class="sub">Modelo de dividendos · B3 e mercado americano</div>
+    </div>
+  </div>
+  <div class="search">
+    <div class="tickerbox">
+      <span>🔍</span>
+      <input id="ticker" value="ITSA4" placeholder="ITSA4, AAPL…" autocomplete="off" spellcheck="false">
+    </div>
+    <button class="btn" id="go">Buscar dados</button>
+    <button class="btn ghost" id="cfgbtn" title="Configurar fontes de dados">⚙</button>
+  </div>
+</div>
+
+<div class="status" id="status">Digite um ticker e clique em “Buscar dados”.</div>
+
+<div class="grid">
+
+  <!-- ENTRADAS -->
+  <div class="card">
+    <h2>Dados da empresa</h2>
+
+    <div class="field">
+      <div class="lbl"><span>Cotação atual</span><span class="tag auto">AUTOMÁTICO</span></div>
+      <div class="inp ro">
+        <span class="pre" id="curSym">R$</span>
+        <input id="price" inputmode="decimal" placeholder="—">
+        <span class="suf" id="priceMeta">—</span>
+      </div>
+      <div class="hint">Buscada automaticamente; você pode sobrescrever para simular outro preço.</div>
+    </div>
+
+    <div class="field">
+      <div class="lbl"><span>Lucro líquido projetado (ano)</span><span class="tag man" id="tagLucro">MANUAL</span></div>
+      <div class="inp">
+        <span class="pre" id="curSym2">R$</span>
+        <input id="lucro" inputmode="numeric" placeholder="0">
+        <span class="suf" id="lucroAbbr">—</span>
+      </div>
+      <div class="hint" id="lucroHint">Lucro total da empresa no ano. Use a sua projeção.</div>
+    </div>
+
+    <div class="field">
+      <div class="lbl"><span>Quantidade de ações</span><span class="tag man" id="tagAcoes">MANUAL</span></div>
+      <div class="inp">
+        <input id="acoes" inputmode="numeric" placeholder="0">
+        <span class="suf" id="acoesAbbr">ações</span>
+      </div>
+      <div class="hint" id="acoesHint">Total de ações da empresa (ON + PN).</div>
+    </div>
+
+    <div class="row2">
+      <div class="field">
+        <div class="lbl"><span>Payout</span><span class="tag man">MANUAL</span></div>
+        <div class="inp"><input id="payout" inputmode="decimal" value="60"><span class="suf">%</span></div>
+      </div>
+      <div class="field">
+        <div class="lbl"><span>Yield aceitável</span><span class="tag man">MANUAL</span></div>
+        <div class="inp"><input id="yld" inputmode="decimal" value="6"><span class="suf">%</span></div>
+      </div>
+    </div>
+
+    <div class="formula">Preço-teto = (Lucro ÷ Nº ações × Payout) ÷ Yield aceitável</div>
+  </div>
+
+  <!-- VEREDITO -->
+  <div class="card verdict" id="verdictCard">
+    <h2>Resultado</h2>
+    <div class="badge" id="badge" style="color:var(--dim);border-color:var(--line);background:var(--panel2)">● AGUARDANDO DADOS</div>
+    <div class="big" id="teto"><small id="curSym3">R$</small>—</div>
+    <div class="bigcap" id="tetoCap">Preencha lucro, nº de ações, payout e yield aceitável.</div>
+
+    <div class="bar">
+      <div class="bartrack"><div class="barfill" id="barfill" style="width:0%;background:linear-gradient(90deg,#2ea043,#3fb950)"></div></div>
+      <div class="barlbl">
+        <span>Cotação <b id="barPrice">—</b></span>
+        <span>Preço-teto <b id="barTeto">—</b></span>
+      </div>
+    </div>
+
+    <div class="split">
+      <div class="mini">
+        <div class="k">Margem de segurança</div>
+        <div class="v" id="margem">—</div>
+      </div>
+      <div class="mini">
+        <div class="k">Desconto sobre o teto</div>
+        <div class="v" id="desc">—</div>
+      </div>
+    </div>
+
+    <div class="scale">
+      <div class="k">Onde a margem cai na escala</div>
+      <div class="scalebar">
+        <i style="flex:1;border-radius:4px 0 0 4px;background:rgba(248,81,73,.55)"></i>
+        <i style="flex:1;background:rgba(210,153,34,.55)"></i>
+        <i style="flex:1.6;border-radius:0 4px 4px 0;background:var(--green)"></i>
+        <div class="mk" id="mk" style="left:0%;display:none"></div>
+      </div>
+      <div class="scalex">
+        <span style="flex:1">Caro &lt; −5%</span>
+        <span style="flex:1;text-align:center">Neutro</span>
+        <span style="flex:1.6;text-align:right">Boa compra ≥ +15%</span>
+      </div>
+    </div>
+
+    <div class="yieldrow" id="yieldrow" style="background:var(--panel2);border-color:var(--line)">
+      <span id="yieldCap">Comprando no preço de hoje seu yield seria</span>
+      <b id="dyProj">—</b>
+    </div>
+  </div>
+</div>
+
+<!-- KPIs -->
+<div class="kpis">
+  <div class="kpi"><div class="k">LPA projetado</div><div class="v" id="lpa">—</div><div class="d">Lucro por ação</div></div>
+  <div class="kpi"><div class="k">DPA projetado</div><div class="v" id="dpa">—</div><div class="d" id="dpaD">Dividendo por ação</div></div>
+  <div class="kpi"><div class="k">DY projetado</div><div class="v" id="dyk">—</div><div class="d" id="dykD">No preço atual</div></div>
+  <div class="kpi"><div class="k">P/L projetado</div><div class="v" id="pl">—</div><div class="d">Preço ÷ lucro por ação</div></div>
+</div>
+
+<!-- BOTTOM -->
+<div class="bottom">
+  <div class="card">
+    <h2>Dividend yield histórico</h2>
+    <div id="histWrap">
+      <div class="empty" id="histEmpty">Busque um ticker para carregar o histórico de proventos.</div>
+    </div>
+    <div id="histContent" style="display:none">
+      <div class="spark" id="spark"></div>
+      <div class="sparkx" id="sparkx"></div>
+      <table style="margin-top:16px">
+        <tr><th>Período</th><th class="r">DY</th><th class="r">DPA</th></tr>
+        <tbody id="histRows"></tbody>
+      </table>
+      <div class="note">DY de cada ano = proventos pagos no ano ÷ preço médio do ano.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Comparativo</h2>
+    <div id="cmpRows">
+      <div class="cmp"><span>DY projetado × yield aceitável</span><b id="c1">—</b></div>
+      <div class="cmp"><span>DY projetado × média 5 anos</span><b id="c2">—</b></div>
+      <div class="cmp"><span id="c3l">Cotação × mín. 52 semanas</span><b id="c3">—</b></div>
+      <div class="cmp"><span id="c4l">Cotação × máx. 52 semanas</span><b id="c4">—</b></div>
+      <div class="cmp"><span>Payout implícito nos últimos 12 meses</span><b id="c5">—</b></div>
+    </div>
+    <div class="note">
+      Faixas do veredito: <b style="color:var(--green)">BOA COMPRA</b> margem ≥ 15% ·
+      <b style="color:var(--amber)">NEUTRO</b> entre −5% e 15% ·
+      <b style="color:var(--red)">CARO</b> abaixo de −5%.
+      Ferramenta de apoio ao seu próprio cálculo — não é recomendação de investimento.
+    </div>
+  </div>
+</div>
+
+<dialog id="cfg">
+  <h3>Fontes de dados</h3>
+  <p>
+    A cotação e o histórico de proventos vêm do Yahoo Finance e funcionam sem cadastro.<br><br>
+    Para preencher <b>lucro e quantidade de ações automaticamente em ações da B3</b>, cole um token
+    gratuito da <a href="https://brapi.dev" target="_blank" rel="noopener">brapi.dev</a> (cadastro leva 1 minuto).
+    Sem token, esses dois campos ficam manuais.
+  </p>
+  <div class="lbl"><span>Token brapi.dev (opcional)</span></div>
+  <div class="inp"><input id="brapiToken" placeholder="cole o token aqui" autocomplete="off" spellcheck="false"></div>
+  <div class="hint">Fica salvo apenas neste computador, no navegador.</div>
+  <div class="dlgbtns">
+    <button class="btn ghost" id="cfgClose">Fechar</button>
+    <button class="btn" id="cfgSave">Salvar</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+
+/* ---------- diagnóstico: qualquer erro de JS aparece na barra de status ---------- */
+window.addEventListener("error", function(ev){
+  try {
+    var e = document.getElementById("status");
+    if (e){
+      e.className = "status err";
+      e.textContent = "Erro na página: " + (ev.message || ev.error) +
+                      (ev.lineno ? " (linha " + ev.lineno + ")" : "");
+    }
+  } catch(_){}
+});
+
+/* ---------- persistência leve (tolerante a file:// bloqueado) ---------- */
+const store = {
+  get(k, d){ try { const v = localStorage.getItem("pt_"+k); return v===null?d:v; } catch(e){ return d; } },
+  set(k, v){ try { localStorage.setItem("pt_"+k, v); } catch(e){} }
+};
+
+/* ---------- helpers ---------- */
+const $ = id => document.getElementById(id);
+const setTxt = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+const nf = (n, d=2) => Number(n).toLocaleString("pt-BR",{minimumFractionDigits:d,maximumFractionDigits:d})
+                        .replace("-","−"); // sinal de menos tipográfico, igual ao resto da página
+const pct = (n, d=2) => (n>0?"+":"") + nf(n,d) + "%";
+
+function parseNum(s){
+  if (s===null || s===undefined) return NaN;
+  s = String(s).trim();
+  if (!s) return NaN;
+  s = s.replace(/[^\d,.-]/g,"");
+  // pt-BR: ponto = milhar, vírgula = decimal
+  if (s.includes(",")) s = s.replace(/\./g,"").replace(",",".");
+  else if ((s.match(/\./g)||[]).length > 1) s = s.replace(/\./g,"");
+  const v = parseFloat(s);
+  return isNaN(v) ? NaN : v;
+}
+
+function abbr(n){
+  if (!isFinite(n) || n===0) return "—";
+  const a = Math.abs(n);
+  if (a >= 1e12) return nf(n/1e12,2)+" tri";
+  if (a >= 1e9)  return nf(n/1e9,2)+" bi";
+  if (a >= 1e6)  return nf(n/1e6,2)+" mi";
+  if (a >= 1e3)  return nf(n/1e3,1)+" mil";
+  return nf(n,0);
+}
+
+let CUR = "BRL";
+const curSymbol = c => c==="USD" ? "US$" : c==="EUR" ? "€" : "R$";
+const money = (n, d=2) => curSymbol(CUR)+" "+nf(n,d);
+
+/* ---------- rede: Yahoo via cadeia de proxies CORS ---------- */
+const PROXIES = [
   u => u,                                                              // direto (se o navegador permitir)
   u => "https://test.cors.workers.dev/?" + u,
   u => "https://api.cors.lol/?url=" + encodeURIComponent(u),
