@@ -74,7 +74,15 @@
   .inp .suf{color:var(--dim);font-size:12.5px;flex-shrink:0;text-align:right;max-width:52%;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .hint{font-size:11px;color:var(--dim);margin-top:5px}
+  .hint.warn{color:var(--amber)}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+  .modes{display:flex;gap:4px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:9px;padding:3px;margin-bottom:16px}
+  .mode{flex:1;height:32px;border:0;border-radius:7px;background:none;color:var(--muted);
+    font-family:inherit;font-size:12.5px;font-weight:600;cursor:pointer}
+  .mode:hover{color:var(--txt)}
+  .mode.on{background:var(--panel);color:var(--txt);box-shadow:0 1px 2px rgba(0,0,0,.3)}
 
   .verdict{transition:border-color .2s}
   .badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;
@@ -190,6 +198,26 @@
       <div class="hint">Buscada automaticamente; você pode sobrescrever para simular outro preço.</div>
     </div>
 
+    <div class="modes">
+      <button class="mode on" id="modeLucro" type="button">Lucro + nº de ações</button>
+      <button class="mode" id="modeLpa" type="button">LPA direto</button>
+    </div>
+
+    <div id="grupoLpa" style="display:none">
+      <div class="field">
+        <div class="lbl"><span>LPA — lucro por ação projetado</span><span class="tag man">MANUAL</span></div>
+        <div class="inp">
+          <span class="pre" id="curSym4">R$</span>
+          <input id="lpaIn" inputmode="decimal" placeholder="0,00">
+          <span class="suf">por ação</span>
+        </div>
+        <div class="hint">Use o <b>lucro por ação básico</b> da DRE da empresa, ajustado para a sua
+          projeção. Ele já considera a média ponderada de ações em circulação e exclui as ações em
+          tesouraria — por isso dispensa a contagem de ações.</div>
+      </div>
+    </div>
+
+    <div id="grupoLucro">
     <div class="field">
       <div class="lbl"><span>Lucro líquido projetado (ano)</span><span class="tag man" id="tagLucro">MANUAL</span></div>
       <div class="inp">
@@ -206,7 +234,8 @@
         <input id="acoes" inputmode="numeric" placeholder="0">
         <span class="suf" id="acoesAbbr">ações</span>
       </div>
-      <div class="hint" id="acoesHint">Total de ações da empresa (ON + PN).</div>
+      <div class="hint" id="acoesHint">Total de ações da empresa (ON + PN), conforme as demonstrações financeiras.</div>
+    </div>
     </div>
 
     <div class="row2">
@@ -220,7 +249,7 @@
       </div>
     </div>
 
-    <div class="formula">Preço-teto = (Lucro ÷ Nº ações × Payout) ÷ Yield aceitável</div>
+    <div class="formula" id="formula">Preço-teto = (Lucro ÷ Nº ações × Payout) ÷ Yield aceitável</div>
   </div>
 
   <!-- VEREDITO -->
@@ -568,7 +597,9 @@ async function buscarFundamentos(ticker, token){
     if (r.marketCap && price) shares = r.marketCap / price;
     if (isFinite(shares) && shares > 0){
       $("acoes").value = Math.round(shares).toLocaleString("pt-BR");
-      marcarAuto("acoes", "brapi · market cap ÷ preço");
+      marcarAuto("acoes", "ESTIMATIVA (valor de mercado ÷ cotação). Erra quando a empresa tem mais de "+
+        "uma classe (ON e PN com preços diferentes) ou negocia em units. Confira nas demonstrações "+
+        "financeiras, ou use o modo “LPA direto”.", true);
       if (typeof r.earningsPerShare === "number" && r.earningsPerShare > 0){
         $("lucro").value = Math.round(r.earningsPerShare * shares).toLocaleString("pt-BR");
         marcarAuto("lucro", "brapi · LPA dos últimos 12 meses — ajuste para a sua projeção");
@@ -578,11 +609,13 @@ async function buscarFundamentos(ticker, token){
   } catch(e){ console.warn("brapi:", e); }
 }
 
-function marcarAuto(campo, hint){
+function marcarAuto(campo, hint, alerta){
   const tag = campo==="lucro" ? $("tagLucro") : $("tagAcoes");
   tag.textContent = "AUTOMÁTICO · EDITÁVEL";
   tag.className = "tag auto";
-  (campo==="lucro" ? $("lucroHint") : $("acoesHint")).textContent = hint;
+  const el = (campo==="lucro" ? $("lucroHint") : $("acoesHint"));
+  el.textContent = hint;
+  el.className = alerta ? "hint warn" : "hint";
 }
 
 /* ---------- aplicar resultado da busca nos campos ---------- */
@@ -640,7 +673,10 @@ function calcDados(){
   const payout = parseNum($("payout").value);
   const yld    = parseNum($("yld").value);
 
-  const lpa = (isFinite(lucro) && isFinite(acoes) && acoes > 0) ? lucro/acoes : NaN;
+  // No modo "LPA direto" o lucro por ação vem da DRE e a contagem de ações não entra no cálculo.
+  const lpa = MODO === "lpa"
+    ? parseNum($("lpaIn").value)
+    : ((isFinite(lucro) && isFinite(acoes) && acoes > 0) ? lucro/acoes : NaN);
   const dpa = (isFinite(lpa) && isFinite(payout)) ? lpa * (payout/100) : NaN;
   const teto = (isFinite(dpa) && isFinite(yld) && yld > 0) ? dpa / (yld/100) : NaN;
   const margem = (isFinite(teto) && isFinite(price) && price > 0) ? (teto/price - 1)*100 : NaN;
@@ -667,7 +703,7 @@ function calcularInner(){
   $("acoesAbbr").textContent = isFinite(d.acoes) ? abbr(d.acoes)+" ações" : "ações";
 
   const s = curSymbol(CUR);
-  setTxt("curSym", s); setTxt("curSym2", s); setTxt("curSym3", s);
+  setTxt("curSym", s); setTxt("curSym2", s); setTxt("curSym3", s); setTxt("curSym4", s);
 
   // KPIs
   $("lpa").textContent = isFinite(d.lpa) ? money(d.lpa, d.lpa<1?3:2) : "—";
@@ -683,8 +719,12 @@ function calcularInner(){
   if (!isFinite(d.teto)){
     // diz exatamente o que está faltando, em vez de só mostrar "—"
     const falta = [];
-    if (!isFinite(d.lucro) || d.lucro <= 0) falta.push("lucro líquido projetado");
-    if (!isFinite(d.acoes) || d.acoes <= 0) falta.push("quantidade de ações");
+    if (MODO === "lpa"){
+      if (!isFinite(d.lpa) || d.lpa <= 0) falta.push("LPA");
+    } else {
+      if (!isFinite(d.lucro) || d.lucro <= 0) falta.push("lucro líquido projetado");
+      if (!isFinite(d.acoes) || d.acoes <= 0) falta.push("quantidade de ações");
+    }
     if (!isFinite(d.payout) || d.payout <= 0) falta.push("payout");
     if (!isFinite(d.yld) || d.yld <= 0) falta.push("yield aceitável");
 
@@ -802,8 +842,26 @@ function setStatus(msg, cls){
   e.className = "status" + (cls ? " "+cls : "");
 }
 
+/* ---------- modo de entrada: lucro+ações ou LPA direto ---------- */
+let MODO = "lucro";
+
+function aplicarModo(m){
+  MODO = (m === "lpa") ? "lpa" : "lucro";
+  store.set("modo", MODO);
+  $("modeLucro").classList.toggle("on", MODO === "lucro");
+  $("modeLpa").classList.toggle("on",  MODO === "lpa");
+  $("grupoLucro").style.display = MODO === "lucro" ? "" : "none";
+  $("grupoLpa").style.display   = MODO === "lpa"   ? "" : "none";
+  $("formula").textContent = MODO === "lpa"
+    ? "Preço-teto = (LPA × Payout) ÷ Yield aceitável"
+    : "Preço-teto = (Lucro ÷ Nº ações × Payout) ÷ Yield aceitável";
+  calcular();
+}
+$("modeLucro").addEventListener("click", () => aplicarModo("lucro"));
+$("modeLpa").addEventListener("click",  () => aplicarModo("lpa"));
+
 /* ---------- eventos ---------- */
-["price","lucro","acoes","payout","yld"].forEach(id => $(id).addEventListener("input", () => {
+["price","lucro","acoes","lpaIn","payout","yld"].forEach(id => $(id).addEventListener("input", () => {
   if (id==="payout") store.set("payout", $(id).value);
   if (id==="yld")    store.set("yld", $(id).value);
   calcular();
@@ -830,7 +888,7 @@ if (BLOQUEADO){
   setStatus(AVISO_SAFARI, "warn");
   $("priceMeta").textContent = "digite a cotação";
 }
-calcular();
+aplicarModo(store.get("modo","lucro"));
 </script>
 </body>
 </html>
