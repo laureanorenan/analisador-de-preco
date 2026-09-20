@@ -45,19 +45,24 @@ body { margin:0; background:var(--surface-000); color:var(--ink-700);
 button { font:inherit; }
 
 /* ── Topo ───────────────────────────────────────────────────────────── */
-.top { background:var(--surface-brand); color:var(--on-brand); min-height:60px; display:flex;
-  align-items:center; gap:var(--space-5); padding:var(--space-2) var(--space-6); flex-wrap:wrap; }
+.top { background:var(--surface-100); color:var(--ink-900); min-height:60px; display:flex;
+  align-items:center; gap:var(--space-5); padding:var(--space-2) var(--space-6); flex-wrap:wrap;
+  border-bottom:1px solid var(--border-subtle); }
 .logo { display:flex; align-items:center; gap:var(--space-3); font-weight:700; font-size:17px; white-space:nowrap; }
+.logo .barra { fill:currentColor; opacity:.9; }
+.logo .risco { fill:var(--accent-ink); }
 .top-right { margin-left:auto; display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap; }
-.busca { width:220px; height:34px; border-radius:var(--radius-md); background:rgba(255,255,255,.12);
-  border:1px solid rgba(255,255,255,.28); color:#fff; padding:0 var(--space-3);
+.busca { width:220px; height:34px; border-radius:var(--radius-md); background:var(--surface-000);
+  border:1px solid var(--border-strong); color:var(--ink-900); padding:0 var(--space-3);
   font-family:var(--font-mono); font-size:14px; font-weight:500; letter-spacing:.06em; text-transform:uppercase; }
-.busca::placeholder { color:rgba(255,255,255,.65); letter-spacing:0; text-transform:none; font-family:var(--font-sans); }
+.busca::placeholder { color:var(--ink-500); letter-spacing:0; text-transform:none; font-family:var(--font-sans); }
+.busca:focus { outline:none; border-color:var(--focus); box-shadow:0 0 0 2px rgba(63,156,124,.2); }
 .btn-top { height:34px; padding:0 var(--space-4); border-radius:var(--radius-md); border:0;
-  background:var(--surface-accent); color:var(--on-accent); font-size:14px; font-weight:500; cursor:pointer; }
+  background:var(--surface-brand); color:var(--on-brand); font-size:14px; font-weight:500; cursor:pointer; }
 .btn-top:disabled { opacity:.55; cursor:default; }
 .tema { height:34px; padding:0 var(--space-3); border-radius:var(--radius-md); background:transparent;
-  border:1px solid rgba(255,255,255,.4); color:#fff; cursor:pointer; font-size:13px; }
+  border:1px solid var(--border-strong); color:var(--ink-700); cursor:pointer; font-size:13px; }
+.tema:hover { background:var(--surface-100); color:var(--ink-900); }
 
 /* ── Página ─────────────────────────────────────────────────────────── */
 .page { padding:var(--space-6); max-width:1440px; margin:0 auto; }
@@ -182,10 +187,10 @@ footer { padding:0 var(--space-6) var(--space-10); max-width:1440px; margin:0 au
 <header class="top">
   <span class="logo">
     <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
-      <rect x="0" y="4" width="22" height="2" rx="1" fill="#66cdaa"></rect>
-      <rect x="2" y="10" width="4" height="9" rx="1" fill="#fff" opacity=".85"></rect>
-      <rect x="9" y="8" width="4" height="11" rx="1" fill="#fff" opacity=".85"></rect>
-      <rect x="16" y="13" width="4" height="6" rx="1" fill="#fff" opacity=".85"></rect>
+      <rect class="risco" x="0" y="4" width="22" height="2" rx="1"></rect>
+      <rect class="barra" x="2" y="10" width="4" height="9" rx="1"></rect>
+      <rect class="barra" x="9" y="8" width="4" height="11" rx="1"></rect>
+      <rect class="barra" x="16" y="13" width="4" height="6" rx="1"></rect>
     </svg>
     Preço Teto
   </span>
