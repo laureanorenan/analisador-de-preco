@@ -5,32 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Analisador de Preço-Teto</title>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@600;700&display=swap" rel="stylesheet">
 <style>
 /* ── Tokens do design system "Preço Teto" ───────────────────────────── */
 :root {
-  --surface-000:#ffffff; --surface-100:#f4f8fb; --surface-200:#e5eef4;
-  --surface-brand:#004070; --surface-accent:#66cdaa;
-  --ink-900:#00263f; --ink-700:#004070; --ink-500:#4d6f88;
-  --on-brand:#ffffff; --on-accent:#00263f; --accent-ink:#0c7a59;
-  --border-subtle:#d6e3ec; --border-strong:#5f7f94; --focus:#3f9c7c;
-  --positive:#0c7a59; --negative:#b3261e; --caution:#8a5a00;
-  --chart-1:#004070; --chart-2:#3f9c7c; --chart-3:#0d6cb0; --chart-grid:#dce7ef;
+  --surface-000:#FFFFFF; --surface-100:#F7F8FA; --surface-200:#EEF1F5;
+  --surface-brand:#2457A7; --surface-accent:#198754;
+  --ink-900:#1D232B; --ink-700:#1D232B; --ink-500:#6B7280;
+  --on-brand:#FFFFFF; --on-accent:#FFFFFF; --accent-ink:#198754;
+  --border-subtle:#E6E9EE; --border-strong:#6B7280; --focus:#2457A7;
+  --positive:#198754; --negative:#B42318; --caution:#8C5E12;
+  --chart-1:#2457A7; --chart-2:#7192C6; --chart-3:#C88719; --chart-grid:#E6E9EE;
 
   --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
   --space-5:24px; --space-6:32px; --space-8:48px; --space-10:64px;
-  --radius-sm:4px; --radius-md:8px; --radius-lg:14px; --radius-pill:999px;
-  --font-sans:Roboto,"Helvetica Neue",Arial,sans-serif;
-  --font-mono:"Roboto Mono",ui-monospace,Menlo,monospace;
+  --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-pill:9999px;
+  --font-sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-mono:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-heading:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --brand-soft:#E9EEF6;
 }
 :root[data-theme="dark"] {
-  --surface-000:#001b2e; --surface-100:#002a45; --surface-200:#003656;
-  --surface-brand:#004070; --surface-accent:#66cdaa;
-  --ink-900:#ffffff; --ink-700:#dfeaf2; --ink-500:#9dbdd3;
-  --on-brand:#ffffff; --on-accent:#00263f; --accent-ink:#8fe0c2;
-  --border-subtle:#14486e; --border-strong:#7fa8c4; --focus:#66cdaa;
-  --positive:#66cdaa; --negative:#ff8a80; --caution:#f0b429;
-  --chart-1:#66cdaa; --chart-2:#7fb8db; --chart-3:#f0b429; --chart-grid:#0d3c5c;
+  --surface-000:#1B1F26; --surface-100:#12151A; --surface-200:#242932;
+  --surface-brand:#6CA0E0; --surface-accent:#3FCB86;
+  --ink-900:#F2F4F7; --ink-700:#DDE1E7; --ink-500:#9AA3AF;
+  --on-brand:#12151A; --on-accent:#12151A; --accent-ink:#3FCB86;
+  --border-subtle:#2A2F37; --border-strong:#6B7584; --focus:#6CA0E0;
+  --positive:#3FCB86; --negative:#F07A6E; --caution:#E3A542;
+  --chart-1:#6CA0E0; --chart-2:#4C6F9B; --chart-3:#E3A542; --chart-grid:#2A2F37;
+  --brand-soft:#16233A;
 }
 
 /* ── Base ───────────────────────────────────────────────────────────── */
@@ -56,7 +59,7 @@ button { font:inherit; }
   border:1px solid var(--border-strong); color:var(--ink-900); padding:0 var(--space-3);
   font-family:var(--font-mono); font-size:14px; font-weight:500; letter-spacing:.06em; text-transform:uppercase; }
 .busca::placeholder { color:var(--ink-500); letter-spacing:0; text-transform:none; font-family:var(--font-sans); }
-.busca:focus { outline:none; border-color:var(--focus); box-shadow:0 0 0 2px rgba(63,156,124,.2); }
+.busca:focus { outline:none; border-color:var(--focus); box-shadow:0 0 0 2px rgba(36,87,167,.22); }
 .btn-top { height:34px; padding:0 var(--space-4); border-radius:var(--radius-md); border:0;
   background:var(--surface-brand); color:var(--on-brand); font-size:14px; font-weight:500; cursor:pointer; }
 .btn-top:disabled { opacity:.55; cursor:default; }
@@ -134,7 +137,7 @@ h1 { font-size:24px; line-height:30px; font-weight:700; color:var(--ink-900); ma
 .tag-man { border:1px solid var(--border-subtle); color:var(--ink-500); }
 .campo { display:flex; align-items:center; gap:var(--space-2); height:40px; padding:0 var(--space-3);
   border:1px solid var(--border-strong); border-radius:var(--radius-sm); background:var(--surface-000); }
-.campo:focus-within { border-color:var(--focus); box-shadow:0 0 0 2px rgba(63,156,124,.2); }
+.campo:focus-within { border-color:var(--focus); box-shadow:0 0 0 2px rgba(36,87,167,.22); }
 .campo .pre, .campo .suf { color:var(--ink-500); font-size:13px; flex-shrink:0; }
 .campo .suf { max-width:52%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:right; }
 .campo input { flex:1; min-width:0; width:100%; border:0; background:none; outline:none; color:var(--ink-900);
@@ -180,6 +183,15 @@ footer { padding:0 var(--space-6) var(--space-10); max-width:1440px; margin:0 au
   .busca { width:150px; }
   .teto-v { font-size:38px; line-height:42px; }
 }
+
+/* ── Identidade visual RLhub 2026 ─────────────────────────────────────
+   Manrope nos títulos, Inter no texto e nos números (algarismos tabulares),
+   azul profundo só para ação e navegação, foco em anel azul. */
+h1,h2,h3 { font-family:var(--font-heading); letter-spacing:-.01em; }
+.rotulo { letter-spacing:.02em; text-transform:none; }
+:focus-visible { outline:none; box-shadow:0 0 0 2px var(--surface-000), 0 0 0 4px var(--focus); }
+.logo { font-family:var(--font-heading); }
+.logo .risco { fill:var(--surface-brand); }
 </style>
 </head>
 <body>
@@ -266,7 +278,7 @@ footer { padding:0 var(--space-6) var(--space-10); max-width:1440px; margin:0 au
             <div class="rotulo">Onde a margem cai na escala</div>
             <div class="escala-barra">
               <i style="flex:1;background:var(--negative)"></i>
-              <i style="flex:1;background:var(--caution)"></i>
+              <i style="flex:1;background:var(--chart-3)"></i>
               <i style="flex:1.6;background:var(--surface-accent)"></i>
               <div class="escala-marca" id="mk" style="left:0%;display:none"></div>
             </div>
@@ -714,7 +726,7 @@ function calcularInner(){
   badge.className = "badge b-" + tom;
 
   const cor = tom==="pos" ? "var(--surface-accent)"
-            : tom==="cau" ? "var(--caution)"
+            : tom==="cau" ? "var(--chart-3)"
             : tom==="neg" ? "var(--negative)" : "var(--border-strong)";
 
   if (isFinite(d.price) && d.teto > 0){
